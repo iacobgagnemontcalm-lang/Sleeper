@@ -141,7 +141,11 @@ class SleeperSite:
             ident.fill(identifier)
             if not pw.is_visible():
                 self._click_submit()
-                pw.wait_for(timeout=15_000)
+                try:
+                    pw.wait_for(timeout=10_000)
+                except PWTimeout:
+                    ident.press("Enter")
+                    pw.wait_for(timeout=10_000)
             pw.fill(password)
             self._click_submit()
             pw.wait_for(state="hidden", timeout=30_000)
@@ -167,6 +171,8 @@ class SleeperSite:
                 inputs: [...document.querySelectorAll('input, textarea')].filter(vis).map(el =>
                     `${el.tagName.toLowerCase()} type=${el.type} placeholder=${el.placeholder} aria=${el.getAttribute('aria-label')}`),
                 buttons: [...new Set([...document.querySelectorAll('button, [role=button]')].filter(vis).map(txt).filter(Boolean))].slice(0, 40),
+                dialogs: [...document.querySelectorAll('[role=dialog]')].filter(vis)
+                    .map(d => d.innerText.replace(/\\s+/g, ' ').slice(0, 400)),
                 links: [...new Set([...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')).filter(h => h.includes('/leagues/')))].slice(0, 30),
             };
         }""")
@@ -174,6 +180,9 @@ class SleeperSite:
         log.info("Inputs: %s", info["inputs"] or "none")
         log.info("Buttons: %s", info["buttons"])
         log.info("League links: %s", info["links"])
+        # Mask long digit runs so a phone number shown in the dialog never lands in a public log.
+        for text in info["dialogs"]:
+            log.info("Dialog text: %s", re.sub(r"\d[\d\s().-]{5,}\d", "#######", text))
 
     def _container_with(self, anchor: Locator, inner_selector: str, max_depth: int = 8) -> Optional[Locator]:
         """Walk up from `anchor` to the nearest ancestor that contains exactly one `inner_selector`."""
