@@ -170,6 +170,10 @@ class SleeperSite:
                     pw.or_(not_found).first.wait_for(timeout=10_000)
                 except PWTimeout:
                     ident.press("Enter")
+                    try:
+                        pw.or_(not_found).first.wait_for(timeout=10_000)
+                    except PWTimeout:
+                        pass
                 if pw.is_visible() or not not_found.is_visible():
                     break
                 log.info("Sleeper didn't recognize that login format")
