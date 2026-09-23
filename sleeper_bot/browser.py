@@ -188,15 +188,19 @@ class SleeperSite:
                     raise PWTimeout("no sign-in confirmation")
                 page.wait_for_timeout(500)
             signed_in = welcome.is_visible()
-            to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True)
-            if to_web.count():
-                to_web.first.click()
-            # Let Sleeper finish storing the session and follow its own redirect before we navigate.
-            try:
-                page.wait_for_url(lambda url: "login=" not in url, timeout=20_000)
-            except PWTimeout:
-                log.info("Still on the login URL after signing in: %s", page.url)
-            page.wait_for_load_state("networkidle", timeout=20_000)
+            to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True).first
+            if signed_in:
+                # CONTINUE TO WEB is what hands the new session to the website; wait for it and use it.
+                try:
+                    to_web.wait_for(timeout=10_000)
+                    to_web.click()
+                except PWTimeout:
+                    log.info("No CONTINUE TO WEB button after signing in")
+                # Give Sleeper a moment to store the session and close the dialog.
+                deadline = time.monotonic() + 15
+                while (welcome.is_visible() or ident.is_visible()) and time.monotonic() < deadline:
+                    page.wait_for_timeout(500)
+                page.wait_for_timeout(3_000)
         except PWTimeout:
             self.snap("login-failed")
             self.describe_page()
