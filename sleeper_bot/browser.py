@@ -214,18 +214,35 @@ class SleeperSite:
             box.click()
             box.press_sequentially(password, delay=50)
             self._wait_shown({"continue": submit}, 5)[1].click()
-            step, found = self._wait_shown({"welcome": welcome, "bad_password": bad_password, "code": code_box,
-                                            "to_web": self._button(r"continue to web")}, 30)
+            # Sleeper fills in "Welcome back, <name>!" once the password is accepted, even if the
+            # dialog is slow to slide that step into view.
+            greeted = page.get_by_text(re.compile(r"welcome back,\s*\S", re.I))
+            try:
+                step, found = self._wait_shown({"welcome": welcome, "bad_password": bad_password, "code": code_box,
+                                                "to_web": self._button(r"continue to web")}, 30)
+            except PWTimeout:
+                if not greeted.count():
+                    raise
+                step = "greeted"
+            if step == "greeted":
+                log.info("Password accepted but the dialog is stuck; pressing CONTINUE TO WEB directly")
+                self.debug_state("stuck after password")
+                buttons = self._button(r"continue to web")
+                for i in range(buttons.count()):
+                    buttons.nth(i).evaluate("el => el.click()")
+                page.wait_for_timeout(5_000)
+                self.debug_state("after forced continue")
             log.info("After entering password: %s step", step)
             if step == "bad_password":
                 raise NotLoggedIn("Sleeper says the password is wrong -- check SLEEPER_PASSWORD")
             if step == "code":
                 self.snap("login-code")
                 raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
-            try:
-                self._wait_shown({"to_web": self._button(r"continue to web")}, 10)[1].click()
-            except PWTimeout:
-                log.info("No CONTINUE TO WEB button; carrying on")
+            if step != "greeted":
+                try:
+                    self._wait_shown({"to_web": self._button(r"continue to web")}, 10)[1].click()
+                except PWTimeout:
+                    log.info("No CONTINUE TO WEB button; carrying on")
             page.wait_for_timeout(3_000)
             self.debug_state("after sign-in")
         except PWTimeout as exc:
