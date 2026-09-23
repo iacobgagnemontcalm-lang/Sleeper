@@ -133,6 +133,7 @@ class SleeperSite:
                               "or set SLEEPER_LOGIN / SLEEPER_PASSWORD")
         self.login(*self.credentials)
         if not self._goto_players():
+            self.debug_state("league page")
             self.snap("players-page-missing")
             self.describe_page()
             raise NotLoggedIn("logged in, but the Players page still did not load (see screenshots)")
@@ -188,6 +189,7 @@ class SleeperSite:
                     raise PWTimeout("no sign-in confirmation")
                 page.wait_for_timeout(500)
             signed_in = welcome.is_visible()
+            self.debug_state("after sign-in")
             to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True).first
             if signed_in:
                 # CONTINUE TO WEB is what hands the new session to the website; wait for it and use it.
@@ -201,6 +203,7 @@ class SleeperSite:
                 while (welcome.is_visible() or ident.is_visible()) and time.monotonic() < deadline:
                     page.wait_for_timeout(500)
                 page.wait_for_timeout(3_000)
+            self.debug_state("before opening league")
         except PWTimeout:
             self.snap("login-failed")
             self.describe_page()
@@ -213,6 +216,19 @@ class SleeperSite:
             self.snap("login-code")
             raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
         log.info("Logged in to Sleeper")
+
+    def debug_state(self, label: str) -> None:
+        """Log where we are and what the site has stored -- key/cookie NAMES only, never values."""
+        page = self.page
+        try:
+            storage = page.evaluate("() => Object.keys(localStorage)")
+        except Exception:  # noqa: BLE001 -- about:blank etc.
+            storage = []
+        cookies = sorted(c["name"] for c in page.context.cookies())
+        dialog = page.locator('[role="dialog"]').filter(visible=True)
+        shown = re.sub(r"\d[\d\s().-]{5,}\d", "#######", dialog.first.inner_text()[:150]) if dialog.count() else "-"
+        log.info("[%s] url=%s | localStorage keys=%s | cookies=%s | visible dialog=%r",
+                 label, page.url, storage, cookies, shown.replace("\n", " "))
 
     def describe_page(self) -> None:
         """Log what's on the page (labels only, never typed values) so selector problems can be fixed from the log."""
