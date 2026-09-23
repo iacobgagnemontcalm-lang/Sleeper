@@ -17,7 +17,7 @@ from .runner import prepare, roster_snapshot, run
 log = logging.getLogger("sleeper_bot")
 
 
-def load(args: argparse.Namespace) -> Config:
+def load(args: argparse.Namespace, require_username: bool = True) -> Config:
     """Load the config, then apply environment/CLI overrides (used by the GitHub workflow)."""
     config = load_config(args.config)
     if os.environ.get("SLEEPER_USERNAME"):
@@ -26,7 +26,7 @@ def load(args: argparse.Namespace) -> Config:
         # A one-off move from the command line replaces the moves in the config.
         drop = PlayerRef(name=args.drop) if getattr(args, "drop", None) else None
         config.moves = [Move(add=PlayerRef(name=args.add), drop=drop)]
-    if not config.sleeper_username:
+    if require_username and not config.sleeper_username:
         raise ConfigError("set 'sleeper_username' in the config or the SLEEPER_USERNAME environment variable")
     return config
 
@@ -61,12 +61,11 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    config = load(args)
+    config = load(args, require_username=False)
     if args.headed:
         config.settings.headless = False
     if args.retry_minutes is not None:
         config.settings.retry_minutes = args.retry_minutes
-    api = SleeperAPI(config.settings.cache_dir)
     factory = functools.partial(
         open_site,
         config.league_id,
@@ -76,6 +75,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         screenshot_dir=Path("screenshots") if config.settings.screenshots else None,
         credentials=env_credentials(),
     )
+    if not config.moves and args.dry_run:
+        # Nothing to add: just prove we can log in and reach the league's Players page.
+        with factory() as site:
+            site.open_players()
+        log.info("Login test passed: logged in and opened the league's Players page")
+        return 0
+    if not config.moves:
+        log.info("No moves in the config -- nothing to do")
+        return 0
+    if not config.sleeper_username:
+        raise ConfigError("set 'sleeper_username' in the config or the SLEEPER_USERNAME environment variable")
+    api = SleeperAPI(config.settings.cache_dir)
     return run(config, api, factory, dry_run=args.dry_run)
 
 

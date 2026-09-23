@@ -36,7 +36,8 @@ account asks for a text/email verification code at every login.
 
 ### 2. Test it with a dry run
 
-**Actions → Sleeper bot → Run workflow**. Put a free agent in **add** (and, optionally, one of your players
+**Actions → Sleeper bot → Run workflow**. To only check that the bot can log in, leave **add** empty and
+mode on **dry-run**. To test a full move, put a free agent in **add** (and, optionally, one of your players
 in **drop**), leave mode on **dry-run**, and run it. A dry run goes all the way to the final confirm button
 and stops there. When it succeeds, the log ends with `dry run: would click '...'`. If it fails, download the
 **screenshots** artifact at the bottom of the run page to see where it got stuck.

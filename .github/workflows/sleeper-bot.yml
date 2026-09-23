@@ -14,7 +14,7 @@ on:
         options: [dry-run, for-real]
         default: dry-run
       add:
-        description: "Player to add (leave empty to use the moves in config.yaml)"
+        description: "Player to add (empty = use config.yaml; empty + dry-run = just test the login)"
         required: false
       drop:
         description: "Player to drop (optional)"
