@@ -187,6 +187,7 @@ class SleeperSite:
                 if time.monotonic() > deadline:
                     raise PWTimeout("no sign-in confirmation")
                 page.wait_for_timeout(500)
+            signed_in = welcome.is_visible()
             to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True)
             if to_web.count():
                 to_web.first.click()
@@ -198,7 +199,7 @@ class SleeperSite:
                                   "username or email there instead")
             raise NotLoggedIn("login failed -- wrong login/password, or the login dialog changed (see log above)")
         page.wait_for_timeout(2_000)
-        if self._visible(sel["login_code"]).is_visible():
+        if not signed_in and self._visible(sel["login_code"]).is_visible():
             self.snap("login-code")
             raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
         log.info("Logged in to Sleeper")
