@@ -191,6 +191,12 @@ class SleeperSite:
             to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True)
             if to_web.count():
                 to_web.first.click()
+            # Let Sleeper finish storing the session and follow its own redirect before we navigate.
+            try:
+                page.wait_for_url(lambda url: "login=" not in url, timeout=20_000)
+            except PWTimeout:
+                log.info("Still on the login URL after signing in: %s", page.url)
+            page.wait_for_load_state("networkidle", timeout=20_000)
         except PWTimeout:
             self.snap("login-failed")
             self.describe_page()
