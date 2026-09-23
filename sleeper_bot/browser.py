@@ -363,12 +363,15 @@ def open_site(league_id: str, auth_file: str | Path, headless: bool = True,
         raise NotLoggedIn(f"{auth_file} not found -- run `python -m sleeper_bot login` first, "
                           "or set SLEEPER_LOGIN / SLEEPER_PASSWORD")
     with sync_playwright() as pw:
-        browser: Browser = pw.chromium.launch(headless=headless)
+        # Look like an ordinary Chrome: Sleeper's login stalls for browsers flagged as automated.
+        browser: Browser = pw.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled"])
         try:
             context = browser.new_context(
                 storage_state=str(auth_file) if auth_file.exists() else None,
                 viewport={"width": 1400, "height": 1000},
+                locale="en-US",
             )
+            context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             page = context.new_page()
             yield SleeperSite(page, league_id, selectors, screenshot_dir, credentials)
             # Sleeper may refresh its token while we browse; keep the newest one.

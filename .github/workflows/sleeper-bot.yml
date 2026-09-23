@@ -58,14 +58,15 @@ jobs:
           DROP: ${{ inputs.drop }}
           RETRY: ${{ inputs.retry_minutes }}
         run: |
-          args=(run)
+          args=(run --headed)
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             [ "$MODE" = "dry-run" ] && args+=(--dry-run)
             [ -n "$ADD" ] && args+=(--add "$ADD")
             [ -n "$DROP" ] && args+=(--drop "$DROP")
             args+=(--retry-minutes "${RETRY:-0}")
           fi
-          python -m sleeper_bot "${args[@]}"
+          # A visible browser on a virtual screen: Sleeper's login stalls in headless mode.
+          xvfb-run -a python -m sleeper_bot "${args[@]}"
 
       # Screenshots of each step, to see what went wrong. Only kept for a few days.
       - uses: actions/upload-artifact@v4
