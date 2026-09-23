@@ -1,0 +1,11 @@
+# Your personal config and login session -- never commit these
+config.yaml
+.auth/
+.cache/
+screenshots/
+*.log
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

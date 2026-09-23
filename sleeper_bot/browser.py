@@ -1,0 +1,177 @@
+"""Drive sleeper.com with Playwright to submit add/drop transactions.
+
+Sleeper has no public write API, so we click through the website the same way you
+would. Sleeper changes its markup from time to time; every selector lives in
+DEFAULT_SELECTORS and can be overridden under `selectors:` in config.yaml.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from contextlib import contextmanager
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Iterator, Optional
+
+from playwright.sync_api import Browser, Locator, Page, TimeoutError as PWTimeout, sync_playwright
+
+SITE = "https://sleeper.com"
+
+DEFAULT_SELECTORS = {
+    # Search box on the league's Players tab.
+    "search_input": 'input[placeholder*="find" i], input[placeholder*="search" i], input[type="search"]',
+    # The "+" button next to a free agent.
+    "add_button": 'button:has-text("+"), [aria-label*="add" i], [class*="add-button" i], [class*="add-player" i]',
+    # The popup that opens after pressing "+".
+    "dialog": '[role="dialog"], [class*="modal" i]',
+    # Control next to a rostered player in that popup that marks them to be dropped.
+    "drop_button": 'button:has-text("-"), button:has-text("Drop"), [aria-label*="drop" i], [class*="drop" i]',
+    # Final confirmation button inside the popup (matched against the button's text).
+    "confirm_text": r"^\s*(confirm|submit|add|add\s*&\s*drop|drop\s*&\s*add|add\s+player)\b",
+    # A button with this text means the player is still on waivers (a claim, not a free-agent add).
+    "waiver_text": r"claim|waiver|bid",
+}
+
+
+class Outcome(str, Enum):
+    SUBMITTED = "submitted"
+    ON_WAIVERS = "on_waivers"
+    NOT_FOUND = "not_found"
+    FAILED = "failed"
+
+
+class NotLoggedIn(RuntimeError):
+    pass
+
+
+def save_login(auth_file: str | Path) -> None:
+    """Open a visible browser, let the user log in by hand, and save the session."""
+    auth_file = Path(auth_file)
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=False)
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto(f"{SITE}/login")
+        input("Log in to Sleeper in the browser window, then press Enter here... ")
+        context.storage_state(path=str(auth_file))
+        browser.close()
+    print(f"Saved login session to {auth_file}. Keep this file private.")
+
+
+def name_pattern(full_name: str) -> re.Pattern:
+    """Match 'Joe Flacco' as well as the abbreviated 'J. Flacco' Sleeper uses in tight layouts."""
+    parts = full_name.split()
+    options = [re.escape(full_name)]
+    if len(parts) >= 2:
+        options.append(rf"{re.escape(parts[0][0])}\.?\s*{re.escape(' '.join(parts[1:]))}")
+    return re.compile(rf"^\s*(?:{'|'.join(options)})\s*$", re.I)
+
+
+class SleeperSite:
+    def __init__(self, page: Page, league_id: str, selectors: Optional[dict] = None,
+                 screenshot_dir: Optional[Path] = None):
+        self.page = page
+        self.league_id = league_id
+        self.sel = {**DEFAULT_SELECTORS, **(selectors or {})}
+        self.screenshot_dir = screenshot_dir
+
+    def snap(self, label: str) -> None:
+        if not self.screenshot_dir:
+            return
+        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        self.page.screenshot(path=str(self.screenshot_dir / f"{stamp}-{slug}.png"), full_page=True)
+
+    def open_players(self) -> None:
+        self.page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
+        try:
+            self.page.locator(self.sel["search_input"]).first.wait_for(state="visible", timeout=20_000)
+        except PWTimeout:
+            if "login" in self.page.url:
+                raise NotLoggedIn("Sleeper session expired -- run `python -m sleeper_bot login` again")
+            raise
+
+    def _container_with(self, anchor: Locator, inner_selector: str, max_depth: int = 8) -> Optional[Locator]:
+        """Walk up from `anchor` to the nearest ancestor that contains exactly one `inner_selector`."""
+        for depth in range(1, max_depth + 1):
+            ancestor = anchor.locator(f"xpath=ancestor::*[{depth}]")
+            if ancestor.locator(inner_selector).count() == 1:
+                return ancestor
+        return None
+
+    def add_drop(self, add_name: str, drop_name: Optional[str], dry_run: bool = False) -> tuple[Outcome, str]:
+        page, sel = self.page, self.sel
+        self.open_players()
+
+        search = page.locator(sel["search_input"]).first
+        search.fill(add_name)
+        name_el = page.get_by_text(name_pattern(add_name)).first
+        try:
+            name_el.wait_for(state="visible", timeout=15_000)
+        except PWTimeout:
+            self.snap(f"not-found-{add_name}")
+            return Outcome.NOT_FOUND, f"{add_name} did not show up in the Players search"
+
+        row = self._container_with(name_el, sel["add_button"])
+        if row is None:
+            self.snap(f"no-add-button-{add_name}")
+            return Outcome.NOT_FOUND, f"no add button next to {add_name} (already rostered?)"
+        row.locator(sel["add_button"]).first.click()
+
+        dialog = page.locator(sel["dialog"]).last
+        try:
+            dialog.wait_for(state="visible", timeout=10_000)
+        except PWTimeout:
+            self.snap(f"no-dialog-{add_name}")
+            return Outcome.FAILED, "add dialog did not open"
+        self.snap(f"dialog-{add_name}")
+
+        if dialog.get_by_role("button", name=re.compile(sel["waiver_text"], re.I)).count():
+            return Outcome.ON_WAIVERS, f"{add_name} is still on waivers"
+
+        if drop_name:
+            drop_el = dialog.get_by_text(name_pattern(drop_name)).first
+            try:
+                drop_el.wait_for(state="visible", timeout=10_000)
+            except PWTimeout:
+                self.snap(f"drop-missing-{drop_name}")
+                return Outcome.FAILED, f"{drop_name} not listed in the drop dialog"
+            drop_row = self._container_with(drop_el, sel["drop_button"])
+            (drop_row.locator(sel["drop_button"]).first if drop_row else drop_el).click()
+            self.snap(f"drop-selected-{drop_name}")
+
+        confirm = dialog.get_by_role("button", name=re.compile(sel["confirm_text"], re.I)).last
+        try:
+            confirm.wait_for(state="visible", timeout=10_000)
+        except PWTimeout:
+            self.snap(f"no-confirm-{add_name}")
+            return Outcome.FAILED, "could not find the confirm button"
+
+        if dry_run:
+            return Outcome.SUBMITTED, f"dry run: would click '{confirm.inner_text().strip()}'"
+        confirm.click()
+        time.sleep(2)
+        self.snap(f"after-confirm-{add_name}")
+        return Outcome.SUBMITTED, "transaction submitted"
+
+
+@contextmanager
+def open_site(league_id: str, auth_file: str | Path, headless: bool = True,
+              selectors: Optional[dict] = None, screenshot_dir: Optional[Path] = None) -> Iterator[SleeperSite]:
+    auth_file = Path(auth_file)
+    if not auth_file.exists():
+        raise NotLoggedIn(f"{auth_file} not found -- run `python -m sleeper_bot login` first")
+    with sync_playwright() as pw:
+        browser: Browser = pw.chromium.launch(headless=headless)
+        try:
+            context = browser.new_context(storage_state=str(auth_file), viewport={"width": 1400, "height": 1000})
+            page = context.new_page()
+            yield SleeperSite(page, league_id, selectors, screenshot_dir)
+            # Sleeper may refresh its token while we browse; keep the newest one.
+            context.storage_state(path=str(auth_file))
+        finally:
+            browser.close()
