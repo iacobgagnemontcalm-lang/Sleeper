@@ -138,83 +138,101 @@ class SleeperSite:
             self.describe_page()
             raise NotLoggedIn("logged in, but the Players page still did not load (see screenshots)")
 
-    def _visible(self, selector: str) -> Locator:
-        return self.page.locator(selector).filter(visible=True).first
+    # True only for elements really in view: a click at the element's centre would land on it.
+    # Sleeper's login dialog is a slider with every step rendered side by side, so ordinary
+    # "visible" checks see the password and "welcome" steps while they're still off to the side.
+    _SHOWN_JS = """el => {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) return false;
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+        const top = document.elementFromPoint(x, y);
+        return !!top && (top === el || el.contains(top));
+    }"""
 
-    def _click_submit(self) -> None:
-        submit = re.compile(self.sel["login_submit_text"], re.I)
-        # .last: the header's "LOG IN" button comes before the dialog's buttons.
-        self.page.get_by_role("button", name=submit).filter(visible=True).last.click()
+    def _shown(self, locator: Locator) -> Optional[Locator]:
+        for candidate in locator.all():
+            try:
+                if candidate.evaluate(self._SHOWN_JS):
+                    return candidate
+            except Exception:  # noqa: BLE001 -- element went away mid-check
+                continue
+        return None
+
+    def _wait_shown(self, locators: dict[str, Locator], timeout: float) -> tuple[str, Locator]:
+        deadline = time.monotonic() + timeout
+        while True:
+            for name, locator in locators.items():
+                found = self._shown(locator)
+                if found is not None:
+                    return name, found
+            if time.monotonic() > deadline:
+                raise PWTimeout(f"none of {list(locators)} appeared")
+            self.page.wait_for_timeout(300)
+
+    def _button(self, pattern: str) -> Locator:
+        return self.page.get_by_role("button", name=re.compile(pattern, re.I))
 
     def login(self, identifier: str, password: str) -> None:
-        """Log in through Sleeper's login dialog (identifier -> CONTINUE -> password -> sign in)."""
+        """Log in through Sleeper's login dialog: identifier -> CONTINUE -> password -> CONTINUE."""
         page, sel = self.page, self.sel
         log.info("Login value: %s", describe_secret(identifier))
         identifier, password = identifier.strip(), password.strip("\r\n")
-        ident, pw = self._visible(sel["login_identifier"]), self._visible(sel["login_password"])
-        not_found = page.get_by_text(re.compile(r"unable to find anyone", re.I)).filter(visible=True).first
-        login_button = page.get_by_role("button", name=re.compile(r"^\s*log\s*in\s*$", re.I)).filter(visible=True).first
+        ident = page.locator(sel["login_identifier"])
+        pw = page.locator(sel["login_password"])
+        # Only the dialog's own buttons -- the page header has a "LOG IN" button too.
+        submit = page.locator('[role="dialog"]').get_by_role("button", name=re.compile(sel["login_submit_text"], re.I))
+        not_found = page.get_by_text(re.compile(r"unable to find anyone", re.I))
+        welcome = page.get_by_text(re.compile(r"successfully signed in", re.I))
+        code_box = page.locator(sel["login_code"])
+        bad_password = page.get_by_text(re.compile(r"(incorrect|invalid|wrong).{0,20}password|password.{0,20}(incorrect|invalid)", re.I))
         try:
             for attempt in identifier_variants(identifier):
-                # Fresh dialog per attempt so an earlier "unable to find" message can't linger.
                 # Opening a league page while logged out shows the login dialog and returns there afterwards.
                 page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
                 try:
-                    ident.wait_for(timeout=15_000)
+                    _, box = self._wait_shown({"login": ident}, 15)
                 except PWTimeout:
-                    login_button.click()
-                    ident.wait_for(timeout=10_000)
-                ident.click()
-                ident.press_sequentially(attempt, delay=80)  # type like a person; some forms ignore instant fills
-                log.info("Typed login matches: %s", ident.input_value() == attempt)
-                self._click_submit()
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline and not (pw.is_visible() or not_found.is_visible()):
-                    page.wait_for_timeout(500)
-                if not (pw.is_visible() or not_found.is_visible()):
-                    ident.press("Enter")
-                    page.wait_for_timeout(5_000)
-                if pw.is_visible():
+                    self._button(r"^\s*log\s*in\s*$").first.click()
+                    _, box = self._wait_shown({"login": ident}, 10)
+                box.click()
+                box.press_sequentially(attempt, delay=80)  # type like a person; instant fills get ignored
+                self._wait_shown({"continue": submit}, 5)[1].click()
+                step, _ = self._wait_shown({"password": pw, "not_found": not_found, "code": code_box}, 20)
+                log.info("After entering login: %s step", step)
+                if step == "code":
+                    self.snap("login-code")
+                    raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
+                if step == "password":
                     break
-                log.info("Sleeper didn't find an account with that login format")
-            pw.wait_for(timeout=10_000)
-            pw.click()
-            pw.press_sequentially(password, delay=50)
-            self._click_submit()
-            # Success shows "You have successfully signed in" with a CONTINUE TO WEB button.
-            welcome = page.get_by_text(re.compile(r"successfully signed in", re.I)).filter(visible=True).first
-            deadline = time.monotonic() + 30
-            while not (welcome.is_visible() or not pw.is_visible()):
-                if time.monotonic() > deadline:
-                    raise PWTimeout("no sign-in confirmation")
-                page.wait_for_timeout(500)
-            signed_in = welcome.is_visible()
-            self.debug_state("after sign-in")
-            to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True).first
-            if signed_in:
-                # CONTINUE TO WEB is what hands the new session to the website; wait for it and use it.
-                try:
-                    to_web.wait_for(timeout=10_000)
-                    to_web.click()
-                except PWTimeout:
-                    log.info("No CONTINUE TO WEB button after signing in")
-                # Give Sleeper a moment to store the session and close the dialog.
-                deadline = time.monotonic() + 15
-                while (welcome.is_visible() or ident.is_visible()) and time.monotonic() < deadline:
-                    page.wait_for_timeout(500)
-                page.wait_for_timeout(3_000)
-            self.debug_state("before opening league")
-        except PWTimeout:
-            self.snap("login-failed")
-            self.describe_page()
-            if not_found.is_visible():
+            else:
+                self.snap("login-not-found")
                 raise NotLoggedIn("Sleeper couldn't find an account for SLEEPER_LOGIN -- use your Sleeper "
                                   "username or email there instead")
-            raise NotLoggedIn("login failed -- wrong login/password, or the login dialog changed (see log above)")
-        page.wait_for_timeout(2_000)
-        if not signed_in and self._visible(sel["login_code"]).is_visible():
-            self.snap("login-code")
-            raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
+
+            box = self._shown(pw)
+            box.click()
+            box.press_sequentially(password, delay=50)
+            self._wait_shown({"continue": submit}, 5)[1].click()
+            step, found = self._wait_shown({"welcome": welcome, "bad_password": bad_password, "code": code_box,
+                                            "to_web": self._button(r"continue to web")}, 30)
+            log.info("After entering password: %s step", step)
+            if step == "bad_password":
+                raise NotLoggedIn("Sleeper says the password is wrong -- check SLEEPER_PASSWORD")
+            if step == "code":
+                self.snap("login-code")
+                raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
+            try:
+                self._wait_shown({"to_web": self._button(r"continue to web")}, 10)[1].click()
+            except PWTimeout:
+                log.info("No CONTINUE TO WEB button; carrying on")
+            page.wait_for_timeout(3_000)
+            self.debug_state("after sign-in")
+        except PWTimeout as exc:
+            self.snap("login-failed")
+            self.debug_state("login failed")
+            self.describe_page()
+            raise NotLoggedIn(f"login failed ({exc}) -- see the log above")
         log.info("Logged in to Sleeper")
 
     def debug_state(self, label: str) -> None:
