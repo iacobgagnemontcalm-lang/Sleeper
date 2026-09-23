@@ -80,6 +80,18 @@ def name_pattern(full_name: str) -> re.Pattern:
     return re.compile(rf"^\s*(?:{'|'.join(options)})\s*$", re.I)
 
 
+def identifier_variants(identifier: str) -> list[str]:
+    """The login as given, plus international forms if it looks like a North American phone number."""
+    variants = [identifier]
+    digits = re.sub(r"\D", "", identifier)
+    if re.fullmatch(r"[\d\s().+-]+", identifier.strip()):
+        if len(digits) == 10:
+            variants += [f"+1{digits}", f"1{digits}"]
+        elif len(digits) == 11 and digits.startswith("1"):
+            variants += [f"+{digits}", digits[1:]]
+    return list(dict.fromkeys(variants))
+
+
 class SleeperSite:
     def __init__(self, page: Page, league_id: str, selectors: Optional[dict] = None,
                  screenshot_dir: Optional[Path] = None, credentials: Optional[tuple[str, str]] = None):
@@ -130,6 +142,7 @@ class SleeperSite:
         """Log in through Sleeper's login dialog (identifier -> CONTINUE -> password -> sign in)."""
         page, sel = self.page, self.sel
         ident, pw = self._visible(sel["login_identifier"]), self._visible(sel["login_password"])
+        not_found = page.get_by_text(re.compile(r"unable to find anyone", re.I)).filter(visible=True).first
         # Opening a league page while logged out shows the login dialog and returns there afterwards.
         page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
         try:
@@ -138,20 +151,28 @@ class SleeperSite:
             except PWTimeout:
                 page.get_by_role("button", name=re.compile(r"^\s*log\s*in\s*$", re.I)).filter(visible=True).first.click()
                 ident.wait_for(timeout=10_000)
-            ident.fill(identifier)
-            if not pw.is_visible():
+            for attempt in identifier_variants(identifier):
+                ident.fill(attempt)
+                if pw.is_visible():
+                    break
                 self._click_submit()
                 try:
-                    pw.wait_for(timeout=10_000)
+                    pw.or_(not_found).first.wait_for(timeout=10_000)
                 except PWTimeout:
                     ident.press("Enter")
-                    pw.wait_for(timeout=10_000)
+                if pw.is_visible() or not not_found.is_visible():
+                    break
+                log.info("Sleeper didn't recognize that login format")
+            pw.wait_for(timeout=10_000)
             pw.fill(password)
             self._click_submit()
             pw.wait_for(state="hidden", timeout=30_000)
         except PWTimeout:
             self.snap("login-failed")
             self.describe_page()
+            if not_found.is_visible():
+                raise NotLoggedIn("Sleeper couldn't find an account for SLEEPER_LOGIN -- use your Sleeper "
+                                  "username or email there instead")
             raise NotLoggedIn("login failed -- wrong login/password, or the login dialog changed (see log above)")
         page.wait_for_timeout(2_000)
         if self._visible(sel["login_code"]).is_visible():
