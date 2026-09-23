@@ -36,10 +36,12 @@ DEFAULT_SELECTORS = {
     # A button with this text means the player is still on waivers (a claim, not a free-agent add).
     "waiver_text": r"claim|waiver|bid",
     # Login page (used for unattended login, e.g. on GitHub Actions).
-    "login_identifier": 'input[type="email"], input[type="tel"], input[name*="user" i], '
-                        'input[placeholder*="email" i], input[placeholder*="username" i], input[placeholder*="phone" i]',
+    "login_identifier": 'input[aria-label*="email" i], input[aria-label*="phone" i], input[type="email"], '
+                        'input[type="tel"], input[placeholder*="email" i], input[placeholder*="phone" i]',
     "login_password": 'input[type="password"]',
-    "login_submit_text": r"^\s*(continue|next|log\s*in|login|sign\s*in)\s*$",
+    # A code box means Sleeper wants a texted/emailed verification code, which the bot can't answer.
+    "login_code": 'input[autocomplete="one-time-code"], input[aria-label*="code" i]',
+    "login_submit_text": r"^\s*(continue|next|sign\s*in|log\s*in)\s*$",
 }
 
 
@@ -116,36 +118,54 @@ class SleeperSite:
             self.describe_page()
             raise NotLoggedIn("logged in, but the Players page still did not load (see screenshots)")
 
+    def _visible(self, selector: str) -> Locator:
+        return self.page.locator(selector).filter(visible=True).first
+
+    def _click_submit(self) -> None:
+        submit = re.compile(self.sel["login_submit_text"], re.I)
+        # .last: the header's "LOG IN" button comes before the dialog's buttons.
+        self.page.get_by_role("button", name=submit).filter(visible=True).last.click()
+
     def login(self, identifier: str, password: str) -> None:
-        """Log in with username/email + password. Fails if Sleeper asks for a verification code."""
+        """Log in through Sleeper's login dialog (identifier -> CONTINUE -> password -> sign in)."""
         page, sel = self.page, self.sel
-        submit = re.compile(sel["login_submit_text"], re.I)
-        page.goto(f"{SITE}/login", wait_until="domcontentloaded")
+        ident, pw = self._visible(sel["login_identifier"]), self._visible(sel["login_password"])
+        # Opening a league page while logged out shows the login dialog and returns there afterwards.
+        page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
         try:
-            page.locator(sel["login_identifier"]).first.fill(identifier, timeout=20_000)
-            password_box = page.locator(sel["login_password"]).first
-            if not password_box.is_visible():
-                # Two-step form: identifier first, then the password screen.
-                page.get_by_role("button", name=submit).first.click()
-            password_box.fill(password, timeout=15_000)
-            page.get_by_role("button", name=submit).last.click()
-            page.wait_for_url(lambda url: "/login" not in url, timeout=30_000)
+            try:
+                ident.wait_for(timeout=15_000)
+            except PWTimeout:
+                page.get_by_role("button", name=re.compile(r"^\s*log\s*in\s*$", re.I)).filter(visible=True).first.click()
+                ident.wait_for(timeout=10_000)
+            ident.fill(identifier)
+            if not pw.is_visible():
+                self._click_submit()
+                pw.wait_for(timeout=15_000)
+            pw.fill(password)
+            self._click_submit()
+            pw.wait_for(state="hidden", timeout=30_000)
         except PWTimeout:
             self.snap("login-failed")
-            raise NotLoggedIn("automatic login failed -- wrong password, a CAPTCHA, or Sleeper asked for a "
-                              "verification code (see the login-failed screenshot)")
+            self.describe_page()
+            raise NotLoggedIn("login failed -- wrong login/password, or the login dialog changed (see log above)")
+        page.wait_for_timeout(2_000)
+        if self._visible(sel["login_code"]).is_visible():
+            self.snap("login-code")
+            raise NotLoggedIn("Sleeper asked for a verification code, which the bot can't answer")
         log.info("Logged in to Sleeper")
 
     def describe_page(self) -> None:
         """Log what's on the page (labels only, never typed values) so selector problems can be fixed from the log."""
         info = self.page.evaluate("""() => {
-            const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            const vis = el => el.checkVisibility ? el.checkVisibility({visibilityProperty: true, opacityProperty: true})
+                                                 : !!(el.offsetWidth || el.offsetHeight);
             const txt = el => (el.innerText || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').slice(0, 40);
             return {
                 url: location.href,
                 title: document.title,
                 inputs: [...document.querySelectorAll('input, textarea')].filter(vis).map(el =>
-                    `${el.tagName.toLowerCase()} type=${el.type} placeholder=${el.placeholder} aria=${el.getAttribute('aria-label')} class=${el.className}`),
+                    `${el.tagName.toLowerCase()} type=${el.type} placeholder=${el.placeholder} aria=${el.getAttribute('aria-label')}`),
                 buttons: [...new Set([...document.querySelectorAll('button, [role=button]')].filter(vis).map(txt).filter(Boolean))].slice(0, 40),
                 links: [...new Set([...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')).filter(h => h.includes('/leagues/')))].slice(0, 30),
             };
