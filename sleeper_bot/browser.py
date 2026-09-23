@@ -210,6 +210,7 @@ class SleeperSite:
                 raise NotLoggedIn("Sleeper couldn't find an account for SLEEPER_LOGIN -- use your Sleeper "
                                   "username or email there instead")
 
+            self._watch_network()
             box = self._shown(pw)
             box.click()
             box.press_sequentially(password, delay=50)
@@ -251,6 +252,33 @@ class SleeperSite:
             self.describe_page()
             raise NotLoggedIn(f"login failed ({exc}) -- see the log above")
         log.info("Logged in to Sleeper")
+
+    def _watch_network(self) -> None:
+        """Log Sleeper API calls made while logging in: URL path, GraphQL operation name, status.
+        Never bodies or variables (they contain the password and tokens)."""
+        import json as _json
+
+        def on_response(resp) -> None:
+            req = resp.request
+            if not re.search(r"sleeper\.(com|app)", req.url) or req.resource_type not in ("fetch", "xhr", "websocket"):
+                return
+            op = ""
+            try:
+                body = _json.loads(req.post_data or "null")
+                if isinstance(body, dict):
+                    op = body.get("operationName") or ""
+            except ValueError:
+                pass
+            path = re.sub(r"\?.*", "", req.url)
+            log.info("  net: %s %s %s -> %s", req.method, path, op, resp.status)
+
+        def on_failed(req) -> None:
+            if re.search(r"sleeper\.(com|app)", req.url):
+                log.info("  net FAILED: %s %s (%s)", req.method, re.sub(r"\?.*", "", req.url), req.failure)
+
+        self.page.on("response", on_response)
+        self.page.on("requestfailed", on_failed)
+        self.page.on("websocket", lambda ws: log.info("  net: websocket %s", re.sub(r"\?.*", "", ws.url)))
 
     def debug_state(self, label: str) -> None:
         """Log where we are and what the site has stored -- key/cookie NAMES only, never values."""
