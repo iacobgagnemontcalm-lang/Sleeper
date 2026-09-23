@@ -152,33 +152,33 @@ class SleeperSite:
         identifier, password = identifier.strip(), password.strip("\r\n")
         ident, pw = self._visible(sel["login_identifier"]), self._visible(sel["login_password"])
         not_found = page.get_by_text(re.compile(r"unable to find anyone", re.I)).filter(visible=True).first
-        # Opening a league page while logged out shows the login dialog and returns there afterwards.
-        page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
+        login_button = page.get_by_role("button", name=re.compile(r"^\s*log\s*in\s*$", re.I)).filter(visible=True).first
         try:
-            try:
-                ident.wait_for(timeout=15_000)
-            except PWTimeout:
-                page.get_by_role("button", name=re.compile(r"^\s*log\s*in\s*$", re.I)).filter(visible=True).first.click()
-                ident.wait_for(timeout=10_000)
             for attempt in identifier_variants(identifier):
-                ident.fill(attempt)
+                # Fresh dialog per attempt so an earlier "unable to find" message can't linger.
+                # Opening a league page while logged out shows the login dialog and returns there afterwards.
+                page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
+                try:
+                    ident.wait_for(timeout=15_000)
+                except PWTimeout:
+                    login_button.click()
+                    ident.wait_for(timeout=10_000)
+                ident.click()
+                ident.press_sequentially(attempt, delay=80)  # type like a person; some forms ignore instant fills
                 log.info("Typed login matches: %s", ident.input_value() == attempt)
+                self._click_submit()
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline and not (pw.is_visible() or not_found.is_visible()):
+                    page.wait_for_timeout(500)
+                if not (pw.is_visible() or not_found.is_visible()):
+                    ident.press("Enter")
+                    page.wait_for_timeout(5_000)
                 if pw.is_visible():
                     break
-                self._click_submit()
-                try:
-                    pw.or_(not_found).first.wait_for(timeout=10_000)
-                except PWTimeout:
-                    ident.press("Enter")
-                    try:
-                        pw.or_(not_found).first.wait_for(timeout=10_000)
-                    except PWTimeout:
-                        pass
-                if pw.is_visible() or not not_found.is_visible():
-                    break
-                log.info("Sleeper didn't recognize that login format")
+                log.info("Sleeper didn't find an account with that login format")
             pw.wait_for(timeout=10_000)
-            pw.fill(password)
+            pw.click()
+            pw.press_sequentially(password, delay=50)
             self._click_submit()
             pw.wait_for(state="hidden", timeout=30_000)
         except PWTimeout:
