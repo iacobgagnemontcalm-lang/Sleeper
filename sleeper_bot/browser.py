@@ -180,7 +180,16 @@ class SleeperSite:
             pw.click()
             pw.press_sequentially(password, delay=50)
             self._click_submit()
-            pw.wait_for(state="hidden", timeout=30_000)
+            # Success shows "You have successfully signed in" with a CONTINUE TO WEB button.
+            welcome = page.get_by_text(re.compile(r"successfully signed in", re.I)).filter(visible=True).first
+            deadline = time.monotonic() + 30
+            while not (welcome.is_visible() or not pw.is_visible()):
+                if time.monotonic() > deadline:
+                    raise PWTimeout("no sign-in confirmation")
+                page.wait_for_timeout(500)
+            to_web = page.get_by_role("button", name=re.compile(r"continue to web", re.I)).filter(visible=True)
+            if to_web.count():
+                to_web.first.click()
         except PWTimeout:
             self.snap("login-failed")
             self.describe_page()
