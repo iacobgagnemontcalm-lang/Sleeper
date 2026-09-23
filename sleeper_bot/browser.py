@@ -80,6 +80,13 @@ def name_pattern(full_name: str) -> re.Pattern:
     return re.compile(rf"^\s*(?:{'|'.join(options)})\s*$", re.I)
 
 
+def describe_secret(value: str) -> str:
+    """Shape of a secret for debugging -- never the value itself."""
+    return (f"{len(value)} chars, {sum(c.isdigit() for c in value)} digits, "
+            f"{sum(c.isalpha() for c in value)} letters, '@': {'@' in value}, '+': {'+' in value}, "
+            f"spaces inside: {' ' in value.strip()}, extra spaces/newlines at ends: {value != value.strip()}")
+
+
 def identifier_variants(identifier: str) -> list[str]:
     """The login as given, plus international forms if it looks like a North American phone number."""
     variants = [identifier]
@@ -141,6 +148,8 @@ class SleeperSite:
     def login(self, identifier: str, password: str) -> None:
         """Log in through Sleeper's login dialog (identifier -> CONTINUE -> password -> sign in)."""
         page, sel = self.page, self.sel
+        log.info("Login value: %s", describe_secret(identifier))
+        identifier, password = identifier.strip(), password.strip("\r\n")
         ident, pw = self._visible(sel["login_identifier"]), self._visible(sel["login_password"])
         not_found = page.get_by_text(re.compile(r"unable to find anyone", re.I)).filter(visible=True).first
         # Opening a league page while logged out shows the login dialog and returns there afterwards.
@@ -153,6 +162,7 @@ class SleeperSite:
                 ident.wait_for(timeout=10_000)
             for attempt in identifier_variants(identifier):
                 ident.fill(attempt)
+                log.info("Typed login matches: %s", ident.input_value() == attempt)
                 if pw.is_visible():
                     break
                 self._click_submit()
