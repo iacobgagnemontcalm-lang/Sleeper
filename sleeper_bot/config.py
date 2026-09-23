@@ -53,10 +53,10 @@ class Move:
 class Settings:
     headless: bool = True
     # Keep retrying pending moves for this long (e.g. start just before waivers clear).
-    retry_minutes: float = 0
-    retry_interval_seconds: float = 30
+    retry_minutes: float = 0.0
+    retry_interval_seconds: float = 30.0
     # How long to poll the public API for the roster change after submitting.
-    verify_timeout_seconds: float = 60
+    verify_timeout_seconds: float = 60.0
     screenshots: bool = True
     auth_file: str = ".auth/state.json"
     cache_dir: str = ".cache"
@@ -82,16 +82,15 @@ def parse_config(data: Any) -> Config:
     if not isinstance(data, dict):
         raise ConfigError("config must be a YAML mapping")
 
-    username = _opt_str(data.get("sleeper_username"))
-    if not username:
-        raise ConfigError("'sleeper_username' is required")
+    # May be left empty and supplied via the SLEEPER_USERNAME environment variable instead.
+    username = _opt_str(data.get("sleeper_username")) or ""
     league_id = _opt_str(data.get("league_id"))
     if not league_id:
         raise ConfigError("'league_id' is required (quote it in YAML so it stays a string)")
 
-    raw_moves = data.get("moves")
-    if not isinstance(raw_moves, list) or not raw_moves:
-        raise ConfigError("'moves' must be a non-empty list")
+    raw_moves = data.get("moves") or []
+    if not isinstance(raw_moves, list):
+        raise ConfigError("'moves' must be a list")
     moves = []
     for i, raw in enumerate(raw_moves, start=1):
         if not isinstance(raw, dict) or "add" not in raw:
@@ -133,6 +132,6 @@ def parse_config(data: Any) -> Config:
 def load_config(path: str | Path) -> Config:
     path = Path(path)
     if not path.exists():
-        raise ConfigError(f"{path} not found -- copy config.example.yaml to {path} and edit it")
+        raise ConfigError(f"{path} not found -- create it (see config.yaml in the repo for the format)")
     with path.open(encoding="utf-8") as fh:
         return parse_config(yaml.safe_load(fh))

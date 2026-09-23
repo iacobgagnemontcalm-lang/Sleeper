@@ -1,5 +1,4 @@
-# Your personal config and login session -- never commit these
-config.yaml
+# Login session -- never commit this (your password goes in GitHub Secrets)
 .auth/
 .cache/
 screenshots/

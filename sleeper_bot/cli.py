@@ -5,15 +5,35 @@ from __future__ import annotations
 import argparse
 import functools
 import logging
+import os
 from pathlib import Path
 
 from .api import PlayerLookupError, SleeperAPI, SleeperAPIError
 from .browser import NotLoggedIn, open_site, save_login
-from .config import ConfigError, load_config
+from .config import Config, ConfigError, Move, PlayerRef, load_config
 from .planner import decide
 from .runner import prepare, roster_snapshot, run
 
 log = logging.getLogger("sleeper_bot")
+
+
+def load(args: argparse.Namespace) -> Config:
+    """Load the config, then apply environment/CLI overrides (used by the GitHub workflow)."""
+    config = load_config(args.config)
+    if os.environ.get("SLEEPER_USERNAME"):
+        config.sleeper_username = os.environ["SLEEPER_USERNAME"]
+    if getattr(args, "add", None):
+        # A one-off move from the command line replaces the moves in the config.
+        drop = PlayerRef(name=args.drop) if getattr(args, "drop", None) else None
+        config.moves = [Move(add=PlayerRef(name=args.add), drop=drop)]
+    if not config.sleeper_username:
+        raise ConfigError("set 'sleeper_username' in the config or the SLEEPER_USERNAME environment variable")
+    return config
+
+
+def env_credentials() -> tuple[str, str] | None:
+    login, password = os.environ.get("SLEEPER_LOGIN"), os.environ.get("SLEEPER_PASSWORD")
+    return (login, password) if login and password else None
 
 
 def cmd_login(args: argparse.Namespace) -> int:
@@ -28,7 +48,7 @@ def cmd_login(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load(args)
     api = SleeperAPI(config.settings.cache_dir)
     prepared = prepare(config, api)
     mine, others = roster_snapshot(api, config.league_id, prepared.user_id)
@@ -41,7 +61,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config = load(args)
     if args.headed:
         config.settings.headless = False
     if args.retry_minutes is not None:
@@ -54,6 +74,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         headless=config.settings.headless,
         selectors=config.selectors,
         screenshot_dir=Path("screenshots") if config.settings.screenshots else None,
+        credentials=env_credentials(),
     )
     return run(config, api, factory, dry_run=args.dry_run)
 
@@ -69,12 +90,16 @@ def build_parser() -> argparse.ArgumentParser:
     login.set_defaults(func=cmd_login)
 
     check = sub.add_parser("check", help="validate config and show what would happen (no browser)")
+    check.add_argument("--add", help="check a single move instead of the config's moves")
+    check.add_argument("--drop", help="player to drop with --add")
     check.set_defaults(func=cmd_check)
 
     run = sub.add_parser("run", help="perform the add/drops")
     run.add_argument("--dry-run", action="store_true", help="go through the site but stop before confirming")
     run.add_argument("--headed", action="store_true", help="show the browser window")
     run.add_argument("--retry-minutes", type=float, help="override settings.retry_minutes")
+    run.add_argument("--add", help="run a single move instead of the config's moves")
+    run.add_argument("--drop", help="player to drop with --add")
     run.set_defaults(func=cmd_run)
     return parser
 

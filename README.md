@@ -10,87 +10,97 @@ rebuilt for Sleeper in Python + [Playwright](https://playwright.dev/python/).
 
 1. Sleeper's **public read API** is used to turn player names into ids, find your roster, and check whether
    the player you want is still available (and whether the player you're dropping is still on your team).
-2. A **headless browser** logs in with your saved session and clicks through the league's Players page:
-   search → `+` → pick the player to drop → confirm. (Sleeper has no public API for making transactions.)
+2. A **headless browser** logs in (with a saved session, or your password from GitHub Secrets) and clicks
+   through the league's Players page: search → `+` → pick the player to drop → confirm. (Sleeper has no public API for making transactions.)
 3. The bot then **checks the public API again** to confirm the roster actually changed, rather than trusting
    what the page said.
 4. If the player is still on waivers, it can **keep retrying** for a set time. That way you can start it a few
    minutes before waivers clear.
 
-## Setup
+## Run it on GitHub (no computer needed)
 
-Requires Python 3.9+.
+Everything runs in GitHub Actions: on a schedule when waivers clear, or when you press a button.
 
-```bash
-git clone <this repo> && cd Sleeper
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-playwright install chromium
+### 1. Add your login as secrets
 
-cp config.example.yaml config.yaml   # then edit it
-```
+Repo → **Settings → Secrets and variables → Actions → New repository secret**:
 
-Edit `config.yaml`:
+| Secret | Value |
+| --- | --- |
+| `SLEEPER_USERNAME` | Your Sleeper username (shown on your profile), used to find your team |
+| `SLEEPER_LOGIN` | What you type in the login box: email, phone or username |
+| `SLEEPER_PASSWORD` | Your Sleeper password |
+
+Secrets are encrypted and hidden in logs. Because the bot logs in automatically, it won't work if your
+account asks for a text/email verification code at every login.
+
+### 2. Test it with a dry run
+
+**Actions → Sleeper bot → Run workflow**. Put a free agent in **add** (and, optionally, one of your players
+in **drop**), leave mode on **dry-run**, and run it. A dry run goes all the way to the final confirm button
+and stops there. When it succeeds, the log ends with `dry run: would click '...'`. If it fails, download the
+**screenshots** artifact at the bottom of the run page to see where it got stuck.
+
+The log also prints your league's waiver settings (`Waivers: ...`), which you need for step 4.
+
+### 3. List your moves
+
+Edit [`config.yaml`](config.yaml) on github.com (pencil icon) and fill in `moves:`:
 
 ```yaml
-sleeper_username: your_sleeper_username
-league_id: "123456789012345678"      # from https://sleeper.com/leagues/<league_id>/...
 moves:
   - add: Joe Flacco
     drop: Deshaun Watson
   - add: { name: Josh Allen, position: QB }   # disambiguate duplicate names
-    drop: { id: "4034" }                       # or use a Sleeper player id
-settings:
-  retry_minutes: 30
 ```
 
-Moves run in order, and rosters are re-checked between moves.
+Moves run in order, and rosters are re-checked between moves. Once they're done, clear the list
+(`moves: []`); an empty list makes the scheduled run do nothing. Moves that are already done are
+skipped, not repeated.
 
-## Usage
+For a one-off move you can also use **Run workflow** with mode **for-real**.
+
+### 4. Scheduling
+
+The schedule is at the top of [`.github/workflows/sleeper-bot.yml`](.github/workflows/sleeper-bot.yml):
+by default **Wednesday 06:45 UTC (2:45 AM Eastern)**, retrying for 75 minutes. Change the `cron:` line to
+start a little before your league's waivers clear. GitHub cron uses **UTC**.
+
+Keep in mind:
+- **GitHub can start scheduled runs late**, sometimes by 15+ minutes when it's busy. Start early and let
+  `retry_minutes` cover the gap.
+- A run that doesn't complete every move **fails**, and GitHub emails you. That happens if someone else got
+  the player or it's still on waivers after the retry window.
+- GitHub pauses schedules in repos with no commits for 60 days. Editing `config.yaml` counts as activity.
+- This repo is **public**, so anyone can see its Actions logs and screenshots. Your password isn't in them,
+  but your league, roster and moves are. You can make the repo private (Settings → General →
+  Danger Zone); the free Actions minutes are plenty for this.
+
+## Run it on your own computer
+
+Requires Python 3.9+.
 
 ```bash
-# 1. Log in once. A browser opens; sign in (including any 2FA), then press Enter in the terminal.
-#    The session is saved to .auth/state.json (git-ignored, so keep it private).
-python -m sleeper_bot login
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+playwright install chromium
 
-# 2. Check your config: names resolve, and each move shows attempt / taken / already_mine / drop_missing.
-python -m sleeper_bot check
-
-# 3. Practice run: go through the site with the browser visible, but stop before clicking confirm.
-python -m sleeper_bot run --dry-run --headed
-
-# 4. For real.
-python -m sleeper_bot run
+python -m sleeper_bot login                    # sign in once in a real browser window; session saved to .auth/
+python -m sleeper_bot check                    # names resolve? each move: attempt / taken / already_mine / drop_missing
+python -m sleeper_bot run --dry-run --headed   # watch it; stops before confirming
+python -m sleeper_bot run                      # for real
+python -m sleeper_bot run --add "Joe Flacco" --drop "Deshaun Watson"   # one-off move, ignores config moves
 ```
 
-Exit codes: `0` all moves done, `1` some moves not completed, `2` config/API error, `3` login expired.
-Screenshots of each step are saved to `screenshots/` (turn this off with `settings.screenshots: false`).
-
-## Scheduling
-
-The bot does not schedule itself. Run it from cron or Windows Task Scheduler a few minutes before your
-league's waivers clear, with `retry_minutes` set so it keeps trying through the clear time. The computer has
-to be on and awake at that time.
-
-**macOS / Linux (cron)**: Wednesdays at 02:55 local time, retrying for 30 minutes:
-
-```cron
-55 2 * * 3 cd /path/to/Sleeper && .venv/bin/python -m sleeper_bot run --retry-minutes 30 >> sleeper_bot.log 2>&1
-```
-
-**Windows Task Scheduler**
-- Program: `C:\path\to\Sleeper\.venv\Scripts\python.exe`
-- Arguments: `-m sleeper_bot run --retry-minutes 30`
-- Start in: `C:\path\to\Sleeper`
-
-The saved login lasts a long time but not forever. If a run exits with code 3, run `login` again.
+Instead of `login`, you can set the `SLEEPER_LOGIN` and `SLEEPER_PASSWORD` environment variables.
+Exit codes: `0` all moves done, `1` some moves not completed, `2` config/API error, `3` login problem.
 
 ## When Sleeper changes its website
 
 The browser steps rely on Sleeper's page layout, which can change without warning. If a run stops finding
 the search box, the `+` button or the confirm button:
 
-1. Run `python -m sleeper_bot run --dry-run --headed` and look at the screenshots in `screenshots/`.
+1. Look at the screenshots (the **screenshots** artifact on GitHub, or `screenshots/` locally).
 2. Override the relevant entry under `selectors:` in `config.yaml`. The defaults and what each one matches
    are in `DEFAULT_SELECTORS` in [`sleeper_bot/browser.py`](sleeper_bot/browser.py).
 

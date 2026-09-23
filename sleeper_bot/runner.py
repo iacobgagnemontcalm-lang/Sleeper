@@ -25,11 +25,21 @@ class Prepared:
     players: dict[str, dict]
 
 
+WAIVER_KEYS = ("waiver_type", "waiver_day_of_week", "daily_waivers", "daily_waivers_hour",
+               "waiver_clear_days", "waiver_budget")
+
+
+def describe_waivers(settings: dict) -> str:
+    """The league's raw waiver settings, so you can tell when to schedule the bot."""
+    return ", ".join(f"{k}={settings[k]}" for k in WAIVER_KEYS if k in settings) or "unknown"
+
+
 def prepare(config: Config, api: SleeperAPI) -> Prepared:
     """Look up the user and resolve every player name up front, so typos fail before game time."""
     user = api.user(config.sleeper_username)
     league = api.league(config.league_id)
     log.info("League: %s (%s season)", league.get("name", config.league_id), league.get("season", "?"))
+    log.info("Waivers: %s", describe_waivers(league.get("settings") or {}))
     players = api.players()
 
     moves, errors = [], []
@@ -83,6 +93,9 @@ def wait_for_landing(api: SleeperAPI, config: Config, user_id: str, move: Resolv
 def run(config: Config, api: SleeperAPI, site_factory: SiteFactory, dry_run: bool = False,
         sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
         prepared: Optional[Prepared] = None) -> int:
+    if not config.moves:
+        log.info("No moves in the config -- nothing to do")
+        return 0
     prepared = prepared or prepare(config, api)
     players, user_id = prepared.players, prepared.user_id
     pending = list(prepared.moves)

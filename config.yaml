@@ -1,0 +1,23 @@
+# Config used by the GitHub Actions workflow. Edit it right on github.com (pencil icon).
+# Don't put your password here -- it goes in the repo's Secrets (see README).
+
+# Your Sleeper username (not your email). You can also leave this empty and set
+# a SLEEPER_USERNAME secret instead.
+sleeper_username: ""
+
+league_id: "1389705683913445376"
+
+# Add/drop moves to make on the next scheduled run, in order. Empty = do nothing.
+# Update this each week, then clear it once the moves are done.
+moves: []
+#  - add: Joe Flacco
+#    drop: Deshaun Watson
+#  - add: { name: Josh Allen, position: QB }   # use team/position when two players share a name
+
+settings:
+  headless: true
+  retry_minutes: 75            # the scheduled run keeps trying this long while players are still on waivers
+  retry_interval_seconds: 30
+  verify_timeout_seconds: 60
+  screenshots: true
+  auth_file: .auth/state.json

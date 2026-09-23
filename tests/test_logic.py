@@ -45,8 +45,9 @@ def test_parse_config():
     assert cfg.league_id == "123"
     assert cfg.moves[1].drop is None and cfg.moves[1].add.team == "BUF"
     assert cfg.settings.retry_minutes == 5.0 and cfg.settings.headless is False
+    assert parse_config({"league_id": "1", "moves": None}).moves == []
     with pytest.raises(ConfigError):
-        parse_config({"sleeper_username": "me", "league_id": "1", "moves": []})
+        parse_config({"sleeper_username": "me", "moves": []})
     with pytest.raises(ConfigError, match="unknown setting"):
         parse_config({"sleeper_username": "me", "league_id": "1", "moves": [{"add": "x"}], "settings": {"bogus": 1}})
 
@@ -152,3 +153,8 @@ def test_run_gives_up_after_retry_window():
     )
     assert code == 1
     assert len(site.calls) == 5  # t=0, 30, 60, 90, 120; the next try would be past the deadline
+
+
+def test_run_with_no_moves_does_nothing():
+    code, site, _ = make([], [{"owner_id": "me", "players": []}])
+    assert code == 0 and site.calls == []

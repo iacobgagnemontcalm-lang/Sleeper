@@ -7,6 +7,7 @@ DEFAULT_SELECTORS and can be overridden under `selectors:` in config.yaml.
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 from contextlib import contextmanager
@@ -18,6 +19,8 @@ from typing import Iterator, Optional
 from playwright.sync_api import Browser, Locator, Page, TimeoutError as PWTimeout, sync_playwright
 
 SITE = "https://sleeper.com"
+
+log = logging.getLogger("sleeper_bot")
 
 DEFAULT_SELECTORS = {
     # Search box on the league's Players tab.
@@ -32,6 +35,11 @@ DEFAULT_SELECTORS = {
     "confirm_text": r"^\s*(confirm|submit|add|add\s*&\s*drop|drop\s*&\s*add|add\s+player)\b",
     # A button with this text means the player is still on waivers (a claim, not a free-agent add).
     "waiver_text": r"claim|waiver|bid",
+    # Login page (used for unattended login, e.g. on GitHub Actions).
+    "login_identifier": 'input[type="email"], input[type="tel"], input[name*="user" i], '
+                        'input[placeholder*="email" i], input[placeholder*="username" i], input[placeholder*="phone" i]',
+    "login_password": 'input[type="password"]',
+    "login_submit_text": r"^\s*(continue|next|log\s*in|login|sign\s*in)\s*$",
 }
 
 
@@ -72,11 +80,12 @@ def name_pattern(full_name: str) -> re.Pattern:
 
 class SleeperSite:
     def __init__(self, page: Page, league_id: str, selectors: Optional[dict] = None,
-                 screenshot_dir: Optional[Path] = None):
+                 screenshot_dir: Optional[Path] = None, credentials: Optional[tuple[str, str]] = None):
         self.page = page
         self.league_id = league_id
         self.sel = {**DEFAULT_SELECTORS, **(selectors or {})}
         self.screenshot_dir = screenshot_dir
+        self.credentials = credentials
 
     def snap(self, label: str) -> None:
         if not self.screenshot_dir:
@@ -86,14 +95,45 @@ class SleeperSite:
         slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
         self.page.screenshot(path=str(self.screenshot_dir / f"{stamp}-{slug}.png"), full_page=True)
 
-    def open_players(self) -> None:
+    def _goto_players(self) -> bool:
         self.page.goto(f"{SITE}/leagues/{self.league_id}/players", wait_until="domcontentloaded")
         try:
             self.page.locator(self.sel["search_input"]).first.wait_for(state="visible", timeout=20_000)
+            return True
         except PWTimeout:
-            if "login" in self.page.url:
-                raise NotLoggedIn("Sleeper session expired -- run `python -m sleeper_bot login` again")
-            raise
+            return False
+
+    def open_players(self) -> None:
+        if self._goto_players():
+            return
+        if not self.credentials:
+            self.snap("not-logged-in")
+            raise NotLoggedIn("could not open the Players page -- run `python -m sleeper_bot login` again, "
+                              "or set SLEEPER_LOGIN / SLEEPER_PASSWORD")
+        self.login(*self.credentials)
+        if not self._goto_players():
+            self.snap("players-page-missing")
+            raise NotLoggedIn("logged in, but the Players page still did not load (see screenshots)")
+
+    def login(self, identifier: str, password: str) -> None:
+        """Log in with username/email + password. Fails if Sleeper asks for a verification code."""
+        page, sel = self.page, self.sel
+        submit = re.compile(sel["login_submit_text"], re.I)
+        page.goto(f"{SITE}/login", wait_until="domcontentloaded")
+        try:
+            page.locator(sel["login_identifier"]).first.fill(identifier, timeout=20_000)
+            password_box = page.locator(sel["login_password"]).first
+            if not password_box.is_visible():
+                # Two-step form: identifier first, then the password screen.
+                page.get_by_role("button", name=submit).first.click()
+            password_box.fill(password, timeout=15_000)
+            page.get_by_role("button", name=submit).last.click()
+            page.wait_for_url(lambda url: "/login" not in url, timeout=30_000)
+        except PWTimeout:
+            self.snap("login-failed")
+            raise NotLoggedIn("automatic login failed -- wrong password, a CAPTCHA, or Sleeper asked for a "
+                              "verification code (see the login-failed screenshot)")
+        log.info("Logged in to Sleeper")
 
     def _container_with(self, anchor: Locator, inner_selector: str, max_depth: int = 8) -> Optional[Locator]:
         """Walk up from `anchor` to the nearest ancestor that contains exactly one `inner_selector`."""
@@ -161,17 +201,23 @@ class SleeperSite:
 
 @contextmanager
 def open_site(league_id: str, auth_file: str | Path, headless: bool = True,
-              selectors: Optional[dict] = None, screenshot_dir: Optional[Path] = None) -> Iterator[SleeperSite]:
+              selectors: Optional[dict] = None, screenshot_dir: Optional[Path] = None,
+              credentials: Optional[tuple[str, str]] = None) -> Iterator[SleeperSite]:
     auth_file = Path(auth_file)
-    if not auth_file.exists():
-        raise NotLoggedIn(f"{auth_file} not found -- run `python -m sleeper_bot login` first")
+    if not auth_file.exists() and not credentials:
+        raise NotLoggedIn(f"{auth_file} not found -- run `python -m sleeper_bot login` first, "
+                          "or set SLEEPER_LOGIN / SLEEPER_PASSWORD")
     with sync_playwright() as pw:
         browser: Browser = pw.chromium.launch(headless=headless)
         try:
-            context = browser.new_context(storage_state=str(auth_file), viewport={"width": 1400, "height": 1000})
+            context = browser.new_context(
+                storage_state=str(auth_file) if auth_file.exists() else None,
+                viewport={"width": 1400, "height": 1000},
+            )
             page = context.new_page()
-            yield SleeperSite(page, league_id, selectors, screenshot_dir)
+            yield SleeperSite(page, league_id, selectors, screenshot_dir, credentials)
             # Sleeper may refresh its token while we browse; keep the newest one.
+            auth_file.parent.mkdir(parents=True, exist_ok=True)
             context.storage_state(path=str(auth_file))
         finally:
             browser.close()

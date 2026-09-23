@@ -1,0 +1,77 @@
+name: Sleeper bot
+
+on:
+  schedule:
+    # GitHub cron is in UTC. 06:45 UTC Wednesday = 2:45 AM Eastern (daylight time).
+    # With retry_minutes: 75 in config.yaml it keeps trying until about 4:00 AM Eastern.
+    # Adjust to your league's waiver time -- see "Scheduling" in the README.
+    - cron: "45 6 * * 3"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run stops before the final confirm; for-real makes the move"
+        type: choice
+        options: [dry-run, for-real]
+        default: dry-run
+      add:
+        description: "Player to add (leave empty to use the moves in config.yaml)"
+        required: false
+      drop:
+        description: "Player to drop (optional)"
+        required: false
+      retry_minutes:
+        description: "Keep retrying for this many minutes"
+        required: false
+        default: "0"
+
+concurrency:
+  group: sleeper-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run bot
+        env:
+          SLEEPER_USERNAME: ${{ secrets.SLEEPER_USERNAME }}
+          SLEEPER_LOGIN: ${{ secrets.SLEEPER_LOGIN }}
+          SLEEPER_PASSWORD: ${{ secrets.SLEEPER_PASSWORD }}
+          MODE: ${{ inputs.mode }}
+          ADD: ${{ inputs.add }}
+          DROP: ${{ inputs.drop }}
+          RETRY: ${{ inputs.retry_minutes }}
+        run: |
+          args=(run)
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            [ "$MODE" = "dry-run" ] && args+=(--dry-run)
+            [ -n "$ADD" ] && args+=(--add "$ADD")
+            [ -n "$DROP" ] && args+=(--drop "$DROP")
+            args+=(--retry-minutes "${RETRY:-0}")
+          fi
+          python -m sleeper_bot "${args[@]}"
+
+      # Screenshots of each step, to see what went wrong. Only kept for a few days.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: screenshots
+          path: screenshots/
+          retention-days: 3
+          if-no-files-found: ignore
