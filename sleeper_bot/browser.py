@@ -113,6 +113,7 @@ class SleeperSite:
         self.login(*self.credentials)
         if not self._goto_players():
             self.snap("players-page-missing")
+            self.describe_page()
             raise NotLoggedIn("logged in, but the Players page still did not load (see screenshots)")
 
     def login(self, identifier: str, password: str) -> None:
@@ -134,6 +135,25 @@ class SleeperSite:
             raise NotLoggedIn("automatic login failed -- wrong password, a CAPTCHA, or Sleeper asked for a "
                               "verification code (see the login-failed screenshot)")
         log.info("Logged in to Sleeper")
+
+    def describe_page(self) -> None:
+        """Log what's on the page (labels only, never typed values) so selector problems can be fixed from the log."""
+        info = self.page.evaluate("""() => {
+            const vis = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            const txt = el => (el.innerText || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').slice(0, 40);
+            return {
+                url: location.href,
+                title: document.title,
+                inputs: [...document.querySelectorAll('input, textarea')].filter(vis).map(el =>
+                    `${el.tagName.toLowerCase()} type=${el.type} placeholder=${el.placeholder} aria=${el.getAttribute('aria-label')} class=${el.className}`),
+                buttons: [...new Set([...document.querySelectorAll('button, [role=button]')].filter(vis).map(txt).filter(Boolean))].slice(0, 40),
+                links: [...new Set([...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href')).filter(h => h.includes('/leagues/')))].slice(0, 30),
+            };
+        }""")
+        log.info("Page: %s | title: %s", info["url"], info["title"])
+        log.info("Inputs: %s", info["inputs"] or "none")
+        log.info("Buttons: %s", info["buttons"])
+        log.info("League links: %s", info["links"])
 
     def _container_with(self, anchor: Locator, inner_selector: str, max_depth: int = 8) -> Optional[Locator]:
         """Walk up from `anchor` to the nearest ancestor that contains exactly one `inner_selector`."""
